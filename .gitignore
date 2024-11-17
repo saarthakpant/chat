@@ -154,3 +154,8 @@ config.py
 # Other files
 .DS_Store
 Thumbs.db
+
+
+#dataset
+
+dataset*
