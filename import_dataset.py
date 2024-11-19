@@ -1,13 +1,15 @@
+# import_dataset.py
+
 import json
 import psycopg2
 from psycopg2.extras import execute_values
-import spacy
+from pgvector.psycopg2 import register_vector
+from sentence_transformers import SentenceTransformer
 import os
 import sys
 from dotenv import load_dotenv
 import warnings
 import logging
-from sentence_transformers import SentenceTransformer
 import torch
 
 # Suppress FutureWarning from PyTorch temporarily
@@ -30,9 +32,6 @@ TRANSFORMER_MODEL = 'all-MiniLM-L6-v2'  # or another sentence-transformer model 
 
 # Path to your dataset
 DATASET_PATH = "dataset1.json"  # Ensure your dataset1.json is in the same directory
-
-# spaCy model
-SPACY_MODEL = "en_core_web_trf"
 
 # =============================================================================
 # Logging Configuration
@@ -77,9 +76,7 @@ def load_dataset(path):
 def transform_data(data):
     """
     Transform dataset into a list of tuples for insertion.
-    Assumes that data is a list of dialogues.
-    Each dialogue contains 'dialogue_id', 'services', and 'turns'.
-    Each turn contains 'turn_id', 'speaker', 'utterance', 'frames', 'dialogue_acts'.
+    Each tuple corresponds to a record in the database.
     """
     try:
         if not isinstance(data, list):
@@ -92,11 +89,11 @@ def transform_data(data):
         missing_keys_count = 0
         for dialogue in data:
             # Validate dialogue keys
-            for key in required_dialogue_keys:
-                if key not in dialogue:
-                    logging.warning(f"Missing key in dialogue: {key}")
-                    print(f"⚠️ Missing key in dialogue: {key}")
-                    continue  # Skip this dialogue
+            missing_dialogue_keys = [key for key in required_dialogue_keys if key not in dialogue]
+            if missing_dialogue_keys:
+                logging.warning(f"Missing keys {missing_dialogue_keys} in dialogue. Skipping this dialogue.")
+                print(f"⚠️ Missing keys {missing_dialogue_keys} in dialogue. Skipping this dialogue.")
+                continue  # Skip this dialogue
             
             dialogue_id = dialogue.get('dialogue_id', 'unknown_dialogue_id')
             services = json.dumps(dialogue.get('services', []))
@@ -205,9 +202,9 @@ def insert_data(conn, records, embeddings):
                     record[4],  # utterance
                     record[5],  # frames
                     record[6],  # dialogue_acts
-                    embeddings[i].tolist()  # embedding
+                    embedding  # embedding as VECTOR(768)
                 )
-                for i, record in enumerate(records)
+                for record, embedding in zip(records, embeddings)
             ]
             # Execute batch insert
             execute_values(cur, sql, data_to_insert)
@@ -232,7 +229,7 @@ def create_table_if_not_exists(conn):
                     utterance TEXT,
                     frames JSONB,
                     dialogue_acts JSONB,
-                    embedding FLOAT[]
+                    embedding VECTOR(768)
                 );
             """)
             conn.commit()
@@ -300,6 +297,9 @@ def main():
         )
         print("✅ Connected to the PostgreSQL database.")
         logging.info("Connected to the PostgreSQL database.")
+        
+        # Register pgvector
+        register_vector(conn)
         
         # Create table if needed
         create_table_if_not_exists(conn)

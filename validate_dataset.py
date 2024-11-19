@@ -100,8 +100,13 @@ class DatasetValidator:
         """Generate visualization plots for the dataset statistics."""
         Path(output_dir).mkdir(exist_ok=True)
         
-        # Set style
-        plt.style.use('seaborn')
+        # Use a default style instead of seaborn
+        plt.style.use('default')
+        
+        # Set some nice defaults
+        plt.rcParams['figure.figsize'] = [10, 6]
+        plt.rcParams['axes.grid'] = True
+        plt.rcParams['grid.alpha'] = 0.3
         
         # Plot distributions
         metrics = {
@@ -112,11 +117,24 @@ class DatasetValidator:
         }
 
         for metric, title in metrics.items():
-            plt.figure(figsize=(10, 6))
-            sns.histplot(content_stats[metric], kde=True)
-            plt.title(f"Distribution of {title}")
-            plt.xlabel(title)import numpy as np
+            plt.figure()
+            plt.hist(content_stats[metric], bins=30, alpha=0.7, color='skyblue', edgecolor='black')
+            plt.title(f"Distribution of {title}", pad=20)
+            plt.xlabel(title)
+            plt.ylabel("Count")
+            
+            # Add mean and median lines
+            mean_val = np.mean(content_stats[metric])
+            median_val = np.median(content_stats[metric])
+            plt.axvline(mean_val, color='red', linestyle='--', label=f'Mean: {mean_val:.1f}')
+            plt.axvline(median_val, color='green', linestyle='--', label=f'Median: {median_val:.1f}')
+            plt.legend()
+            
+            plt.tight_layout()
+            plt.savefig(f"{output_dir}/{metric}_distribution.png")
             plt.close()
+    
+        print(f"✅ Generated plots in '{output_dir}' directory")
 
     def print_summary(self, structure_stats: Dict[str, Any], content_stats: Dict[str, Any]):
         """Print a summary of the dataset statistics."""
