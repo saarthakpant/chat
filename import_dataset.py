@@ -1,8 +1,6 @@
-# import_dataset.py
-
 import json
 import psycopg2
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, RealDictCursor
 from pgvector.psycopg2 import register_vector
 from sentence_transformers import SentenceTransformer
 import os
@@ -11,316 +9,327 @@ from dotenv import load_dotenv
 import warnings
 import logging
 import torch
+from tqdm import tqdm
+import numpy as np
+import time
 
-# Suppress FutureWarning from PyTorch temporarily
-warnings.filterwarnings("ignore", category=FutureWarning, module='thinc.shims.pytorch')
+# Suppress warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 
-# =============================================================================
-# Configuration Variables
-# =============================================================================
-
-# Load environment variables from .env file
+# Load environment variables
 load_dotenv()
 
-# Database connection parameters
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
-TRANSFORMER_MODEL = 'all-MiniLM-L6-v2'  # or another sentence-transformer model of your choice
+# Configuration
+DB_CONFIG = {
+    "dbname": os.getenv("DB_NAME"),
+    "user": os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+    "host": os.getenv("DB_HOST"),
+    "port": os.getenv("DB_PORT")
+}
 
-# Path to your dataset
-DATASET_PATH = "dataset1.json"  # Ensure your dataset1.json is in the same directory
+TRANSFORMER_MODEL = 'all-MiniLM-L6-v2'
+DATASET_PATH = "Touse.json"
+BATCH_SIZE = 100  # Smaller batch size for better memory management
+EMBEDDING_DIM = 384
+MAX_RETRIES = 3   # Number of retries for failed operations
 
-# =============================================================================
-# Logging Configuration
-# =============================================================================
-
+# Logging setup
 logging.basicConfig(
     filename='import_dataset.log',
-    filemode='a',
     format='%(asctime)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-# =============================================================================
-# Function Definitions
-# =============================================================================
-
-def load_dataset(path):
-    """
-    Load dataset from a JSON file.
-    """
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        print(f"✅ Loaded dataset from {path}.")
-        logging.info(f"Loaded dataset from {path}.")
-        print(f"Dataset type: {type(data)}")
-        if isinstance(data, dict):
-            print(f"Dataset keys: {list(data.keys())}")
-            logging.info(f"Dataset keys: {list(data.keys())}")
-        elif isinstance(data, list):
-            print(f"Number of dialogues: {len(data)}")
-            logging.info(f"Number of dialogues: {len(data)}")
-            if len(data) > 0:
-                print(f"First dialogue keys: {list(data[0].keys())}")
-                logging.info(f"First dialogue keys: {list(data[0].keys())}")
-        return data
-    except Exception as e:
-        print(f"❌ Failed to load dataset: {e}")
-        logging.error(f"Failed to load dataset: {e}")
-        sys.exit(1)
-
-def transform_data(data):
-    """
-    Transform dataset into a list of tuples for insertion.
-    Each tuple corresponds to a record in the database.
-    """
-    try:
-        if not isinstance(data, list):
-            raise TypeError("Data is not a list.")
-        
-        required_dialogue_keys = ['dialogue_id', 'services', 'turns']
-        required_turn_keys = ['turn_id', 'speaker', 'utterance', 'frames', 'dialogue_acts']
-        
-        records = []
-        missing_keys_count = 0
-        for dialogue in data:
-            # Validate dialogue keys
-            missing_dialogue_keys = [key for key in required_dialogue_keys if key not in dialogue]
-            if missing_dialogue_keys:
-                logging.warning(f"Missing keys {missing_dialogue_keys} in dialogue. Skipping this dialogue.")
-                print(f"⚠️ Missing keys {missing_dialogue_keys} in dialogue. Skipping this dialogue.")
-                continue  # Skip this dialogue
-            
-            dialogue_id = dialogue.get('dialogue_id', 'unknown_dialogue_id')
-            services = json.dumps(dialogue.get('services', []))
-            
-            turns = dialogue.get('turns', [])
-            if not isinstance(turns, list):
-                logging.warning(f"'turns' should be a list in dialogue {dialogue_id}. Skipping this dialogue.")
-                print(f"⚠️ 'turns' should be a list in dialogue {dialogue_id}. Skipping this dialogue.")
-                continue  # Skip this dialogue
-            
-            for turn in turns:
-                # Validate turn keys
-                missing_turn_keys = [key for key in required_turn_keys if key not in turn]
-                if missing_turn_keys:
-                    missing_keys_count += 1
-                    logging.warning(f"Missing keys {missing_turn_keys} in turn of dialogue {dialogue_id}. Using default values.")
-                    print(f"⚠️ Missing keys {missing_turn_keys} in turn of dialogue {dialogue_id}. Using default values.")
-                
-                turn_id_original = turn.get('turn_id', 'unknown_turn_id')
-                turn_id = f"{dialogue_id}_{turn_id_original}"  # Ensure unique turn_id across dialogues
-                
-                # Convert speaker to integer
-                speaker_str = str(turn.get('speaker', '')).upper()
-                speaker = 0  # default value
-                if speaker_str == 'USER':
-                    speaker = 1
-                elif speaker_str in ['SYSTEM', 'ASSISTANT']:
-                    speaker = 0
-                else:
-                    try:
-                        speaker = int(speaker_str)
-                    except (ValueError, TypeError):
-                        logging.warning(f"Invalid speaker value '{speaker_str}' in dialogue {dialogue_id}. Using default value 0.")
-                        print(f"⚠️ Invalid speaker value '{speaker_str}' in dialogue {dialogue_id}. Using default value 0.")
-                
-                utterance = turn.get('utterance', '')
-                frames = json.dumps(turn.get('frames', {}))
-                dialogue_acts = json.dumps(turn.get('dialogue_acts', {}))
-                
-                records.append((turn_id, dialogue_id, services, speaker, utterance, frames, dialogue_acts))
-        
-        print(f"✅ Transformed {len(records)} records from {len(data)} dialogues.")
-        logging.info(f"Transformed {len(records)} records from {len(data)} dialogues.")
-        if missing_keys_count > 0:
-            print(f"⚠️ Total turns with missing keys: {missing_keys_count}")
-            logging.warning(f"Total turns with missing keys: {missing_keys_count}")
-        return records
-    except KeyError as e:
-        print(f"❌ Missing expected key in dataset: {e}")
-        logging.error(f"Missing expected key in dataset: {e}")
-        sys.exit(1)
-    except TypeError as e:
-        print(f"❌ Type error: {e}")
-        logging.error(f"Type error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Failed to transform data: {e}")
-        logging.error(f"Failed to transform data: {e}")
-        sys.exit(1)
-
-def generate_embeddings(utterances, model):
-    """
-    Generate vector embeddings for a list of utterances using sentence-transformers.
-    """
-    try:
-        # Move model to GPU if available
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        model = model.to(device)
-        
-        # Generate embeddings in batches
-        embeddings = model.encode(
-            utterances,
-            batch_size=32,  # Adjust batch size based on your GPU memory
-            show_progress_bar=True,
-            device=device
-        )
-        
-        print(f"✅ Generated embeddings for utterances using {device}.")
-        logging.info(f"Generated embeddings for utterances using {device}.")
-        return embeddings
-    except Exception as e:
-        print(f"❌ Failed to generate embeddings: {e}")
-        logging.error(f"Failed to generate embeddings: {e}")
-        sys.exit(1)
-
-def insert_data(conn, records, embeddings):
-    """
-    Insert data into the conversation_turns table.
-    """
+def create_tables(conn):
+    """Create optimized tables for the dialogue system"""
     try:
         with conn.cursor() as cur:
-            # Prepare the SQL statement
-            sql = """
-                INSERT INTO conversation_turns 
-                (turn_id, dialogue_id, services, speaker, utterance, frames, dialogue_acts, embedding)
-                VALUES %s
-                ON CONFLICT (turn_id) DO NOTHING
-            """
-            # Combine records with embeddings
-            data_to_insert = [
-                (
-                    record[0],  # turn_id
-                    record[1],  # dialogue_id
-                    record[2],  # services
-                    record[3],  # speaker
-                    record[4],  # utterance
-                    record[5],  # frames
-                    record[6],  # dialogue_acts
-                    embedding  # embedding as VECTOR(768)
-                )
-                for record, embedding in zip(records, embeddings)
-            ]
-            # Execute batch insert
-            execute_values(cur, sql, data_to_insert)
-            conn.commit()
-            print(f"✅ Inserted {len(data_to_insert)} records into the database.")
-            logging.info(f"Inserted {len(data_to_insert)} records into the database.")
-    except Exception as e:
-        conn.rollback()
-        print(f"❌ Failed to insert data: {e}")
-        logging.error(f"Failed to insert data: {e}")
-        sys.exit(1)
-
-def create_table_if_not_exists(conn):
-    try:
-        with conn.cursor() as cur:
+            # First drop indexes if they exist
             cur.execute("""
-                CREATE TABLE IF NOT EXISTS conversation_turns (
-                    turn_id TEXT PRIMARY KEY,
-                    dialogue_id TEXT NOT NULL,
-                    services JSONB,
-                    speaker INTEGER,
-                    utterance TEXT,
-                    frames JSONB,
-                    dialogue_acts JSONB,
-                    embedding VECTOR(768)
+                DROP INDEX IF EXISTS idx_dialogues_id;
+                DROP INDEX IF EXISTS idx_dialogue_category;
+                DROP INDEX IF EXISTS idx_resolution_status;
+                DROP INDEX IF EXISTS idx_turns_dialogue_id;
+                DROP INDEX IF EXISTS idx_turns_intent;
+                DROP INDEX IF EXISTS idx_utterance_trgm;
+                DROP INDEX IF EXISTS idx_dialogue_embedding;
+                DROP INDEX IF EXISTS idx_turn_embedding;
+            """)
+
+            cur.execute("""
+                -- Enable required extensions
+                CREATE EXTENSION IF NOT EXISTS vector;
+                CREATE EXTENSION IF NOT EXISTS pg_trgm;
+                
+                -- Drop existing tables if needed
+                DROP TABLE IF EXISTS dialogues CASCADE;
+                DROP TABLE IF EXISTS dialogue_turns CASCADE;
+                DROP TABLE IF EXISTS dialogue_metadata CASCADE;
+                
+                -- Create dialogues table
+                CREATE TABLE dialogues (
+                    id SERIAL PRIMARY KEY,
+                    dialogue_id TEXT UNIQUE,
+                    services TEXT[],
+                    scenario_category TEXT,
+                    generated_scenario TEXT,
+                    resolution_status TEXT,
+                    embedding vector(384),
+                    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
                 );
+
+                -- Create turns table
+                CREATE TABLE dialogue_turns (
+                    id SERIAL PRIMARY KEY,
+                    dialogue_id TEXT REFERENCES dialogues(dialogue_id),
+                    turn_number INTEGER,
+                    utterance TEXT,
+                    intent TEXT,
+                    assistant_response TEXT,
+                    embedding vector(384)
+                );
+
+                -- Create metadata table
+                CREATE TABLE dialogue_metadata (
+                    id SERIAL PRIMARY KEY,
+                    dialogue_id TEXT REFERENCES dialogues(dialogue_id),
+                    user_emotions TEXT[],
+                    assistant_emotions TEXT[],
+                    time_slot INTEGER[],
+                    time_period TEXT,
+                    regions TEXT[]
+                );
+
+                -- Create indexes
+                CREATE INDEX idx_dialogues_id ON dialogues(dialogue_id);
+                CREATE INDEX idx_dialogue_category ON dialogues(scenario_category);
+                CREATE INDEX idx_resolution_status ON dialogues(resolution_status);
+                CREATE INDEX idx_turns_dialogue_id ON dialogue_turns(dialogue_id);
+                CREATE INDEX idx_turns_intent ON dialogue_turns(intent);
+                CREATE INDEX idx_utterance_trgm ON dialogue_turns USING gin(utterance gin_trgm_ops);
+                CREATE INDEX idx_dialogue_embedding ON dialogues USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+                CREATE INDEX idx_turn_embedding ON dialogue_turns USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
             """)
             conn.commit()
-            print("✅ Ensured conversation_turns table exists.")
-            logging.info("Ensured conversation_turns table exists.")
+            print("✅ Created database schema successfully")
+            logging.info("Created database schema successfully")
     except Exception as e:
         conn.rollback()
-        print(f"❌ Failed to create table: {e}")
-        logging.error(f"Failed to create table: {e}")
-        sys.exit(1)
+        print(f"❌ Failed to create schema: {e}")
+        logging.error(f"Failed to create schema: {e}")
+        raise
+    
+def generate_embeddings(texts, model, batch_size=32):
+    """Generate embeddings with batching and progress bar"""
+    device = torch.device('cpu')  # Using CPU for compatibility
+    model = model.to(device)
+    
+    embeddings = []
+    for i in tqdm(range(0, len(texts), batch_size), desc="Generating embeddings"):
+        batch = texts[i:i + batch_size]
+        with torch.no_grad():
+            batch_embeddings = model.encode(
+                batch,
+                show_progress_bar=False,
+                convert_to_numpy=True
+            )
+        embeddings.extend(batch_embeddings)
+        
+        if i % (batch_size * 10) == 0:  # Clear memory periodically
+            torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
+    return np.array(embeddings)
 
-# =============================================================================
-# Main Execution
-# =============================================================================
+def process_dialogue(dialogue, model):
+    """Process a single dialogue and return structured data"""
+    dialogue_id = dialogue['dialogue_id']
+    
+    # Generate embedding for the entire dialogue context
+    dialogue_text = " ".join([turn['utterance'] for turn in dialogue['turns']])
+    dialogue_embedding = model.encode([dialogue_text])[0]
+    
+    # Process turns and generate embeddings
+    turns_data = []
+    for turn in dialogue['turns']:
+        turn_embedding = model.encode([turn['utterance']])[0]
+        turns_data.append({
+            'dialogue_id': dialogue_id,
+            'turn_number': turn['turn_number'],
+            'utterance': turn['utterance'],
+            'intent': turn['intent'],
+            'assistant_response': turn['assistant_response'],
+            'embedding': turn_embedding
+        })
+    
+    # Structure dialogue data
+    dialogue_data = {
+        'dialogue_id': dialogue_id,
+        'services': dialogue['services'],
+        'scenario_category': dialogue['scenario_category'],
+        'generated_scenario': dialogue['generated_scenario'],
+        'resolution_status': dialogue['resolution_status'],
+        'embedding': dialogue_embedding
+    }
+    
+    # Structure metadata
+    metadata = {
+        'dialogue_id': dialogue_id,
+        'user_emotions': dialogue['user_emotions'],
+        'assistant_emotions': dialogue['assistant_emotions'],
+        'time_slot': dialogue['time_slot'][:2],
+        'time_period': dialogue['time_slot'][2],
+        'regions': dialogue['regions']
+    }
+    
+    return dialogue_data, turns_data, metadata
+
+def batch_insert(conn, table_name, columns, data):
+    """Insert data in batches with retries"""
+    if not data:
+        return
+        
+    for attempt in range(MAX_RETRIES):
+        try:
+            with conn.cursor() as cur:
+                sql = f"""
+                    INSERT INTO {table_name} ({', '.join(columns)})
+                    VALUES %s
+                    ON CONFLICT DO NOTHING
+                """
+                execute_values(cur, sql, [tuple(row[col] for col in columns) for row in data])
+            conn.commit()
+            return
+        except Exception as e:
+            if attempt == MAX_RETRIES - 1:
+                raise
+            logging.warning(f"Retry {attempt + 1} failed: {e}")
+            time.sleep(1)
+            conn.rollback()
+
+def process_large_dataset(data, model, conn):
+    """Process large datasets with better progress tracking and error handling"""
+    total_dialogues = len(data)
+    processed_count = 0
+    failed_dialogues = []
+    
+    print(f"🚀 Starting to process {total_dialogues} dialogues...")
+    
+    # Process in smaller chunks
+    for chunk_start in range(0, total_dialogues, BATCH_SIZE):
+        chunk_end = min(chunk_start + BATCH_SIZE, total_dialogues)
+        chunk = data[chunk_start:chunk_end]
+        
+        dialogue_data = []
+        turns_data = []
+        metadata_data = []
+        
+        # Process each dialogue in the chunk
+        for dialogue in tqdm(chunk, desc=f"Processing dialogues {chunk_start+1}-{chunk_end}"):
+            try:
+                dialogue_info, turns_info, metadata_info = process_dialogue(dialogue, model)
+                dialogue_data.append(dialogue_info)
+                turns_data.extend(turns_info)
+                metadata_data.append(metadata_info)
+                
+            except Exception as e:
+                failed_dialogues.append((dialogue['dialogue_id'], str(e)))
+                logging.error(f"Failed to process dialogue {dialogue['dialogue_id']}: {e}")
+                continue
+        
+        try:
+            # Insert dialogue data
+            batch_insert(conn, 'dialogues',
+                        ['dialogue_id', 'services', 'scenario_category', 'generated_scenario', 
+                         'resolution_status', 'embedding'],
+                        dialogue_data)
+            
+            # Insert turns data
+            batch_insert(conn, 'dialogue_turns',
+                        ['dialogue_id', 'turn_number', 'utterance', 'intent', 
+                         'assistant_response', 'embedding'],
+                        turns_data)
+            
+            # Insert metadata
+            batch_insert(conn, 'dialogue_metadata',
+                        ['dialogue_id', 'user_emotions', 'assistant_emotions', 
+                         'time_slot', 'time_period', 'regions'],
+                        metadata_data)
+            
+        except Exception as e:
+            logging.error(f"Failed to process chunk {chunk_start}-{chunk_end}: {e}")
+            failed_dialogues.extend([(d['dialogue_id'], str(e)) for d in dialogue_data])
+            continue
+        
+        processed_count += len(chunk)
+        print(f"✅ Processed {processed_count}/{total_dialogues} dialogues")
+        
+        # Clear memory
+        torch.cuda.empty_cache() if torch.cuda.is_available() else None
+    
+    return processed_count, failed_dialogues
 
 def main():
-    # Validate environment variables
-    missing_vars = []
-    for var in ["DB_NAME", "DB_USER", "DB_PASSWORD", "DB_HOST", "DB_PORT"]:
-        if not globals()[var]:
-            missing_vars.append(var)
-    if missing_vars:
-        print(f"❌ Missing environment variables: {', '.join(missing_vars)}")
-        logging.error(f"Missing environment variables: {', '.join(missing_vars)}")
-        sys.exit(1)
-
+    print("🚀 Starting data import process...")
+    
     # Load dataset
-    data = load_dataset(DATASET_PATH)
+    try:
+        with open(DATASET_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        print(f"✅ Loaded {len(data)} dialogues from dataset")
+    except Exception as e:
+        print(f"❌ Failed to load dataset: {e}")
+        return
 
-    # Transform data
-    records = transform_data(data)
-
-    # Check if any records to process
-    if not records:
-        print("⚠️ No records to insert.")
-        logging.warning("No records to insert.")
-        sys.exit(0)
-
-    # Extract utterances for embedding
-    utterances = [record[4] for record in records]
-
-    # Initialize transformer model
+    # Initialize model
     try:
         model = SentenceTransformer(TRANSFORMER_MODEL)
-        print(f"✅ Loaded Sentence Transformer model '{TRANSFORMER_MODEL}'.")
-        logging.info(f"Loaded Sentence Transformer model '{TRANSFORMER_MODEL}'.")
+        print("✅ Initialized SentenceTransformer model")
     except Exception as e:
-        print(f"❌ Failed to load Sentence Transformer model '{TRANSFORMER_MODEL}': {e}")
-        logging.error(f"Failed to load Sentence Transformer model '{TRANSFORMER_MODEL}': {e}")
-        sys.exit(1)
+        print(f"❌ Failed to initialize model: {e}")
+        return
 
-    # Generate embeddings
-    embeddings = generate_embeddings(utterances, model)
-
-    # Database operations
-    conn = None
+    # Connect to database
     try:
-        # Connect to the PostgreSQL database
-        conn = psycopg2.connect(
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT
-        )
-        print("✅ Connected to the PostgreSQL database.")
-        logging.info("Connected to the PostgreSQL database.")
-        
-        # Register pgvector
+        conn = psycopg2.connect(**DB_CONFIG)
         register_vector(conn)
+        print("✅ Connected to database")
+    except Exception as e:
+        print(f"❌ Failed to connect to database: {e}")
+        return
+
+    try:
+        # Create tables
+        create_tables(conn)
         
-        # Create table if needed
-        create_table_if_not_exists(conn)
+        # Process the dataset
+        processed_count, failed_dialogues = process_large_dataset(data, model, conn)
         
-        # Insert data
-        insert_data(conn, records, embeddings)
+        # Report results
+        print("\n=== Import Summary ===")
+        print(f"Total dialogues: {len(data)}")
+        print(f"Successfully processed: {processed_count}")
+        print(f"Failed dialogues: {len(failed_dialogues)}")
+        
+        if failed_dialogues:
+            print("\nFailed dialogues:")
+            for dialogue_id, error in failed_dialogues:
+                print(f"- {dialogue_id}: {error}")
+            
+            # Log failed dialogues
+            with open('failed_dialogues.log', 'w') as f:
+                json.dump(failed_dialogues, f, indent=2)
+        
+        print("\n✅ Data import completed")
+        logging.info("Data import completed successfully")
         
     except Exception as e:
-        print(f"❌ Database operation failed: {e}")
-        logging.error(f"Database operation failed: {e}")
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
-        sys.exit(1)
+        conn.rollback()
+        print(f"❌ Import failed: {e}")
+        logging.error(f"Import failed: {e}")
+        raise
     finally:
-        if conn:
-            conn.close()
-            print("✅ Database connection closed.")
-            logging.info("Database connection closed.")
+        conn.close()
 
 if __name__ == "__main__":
     main()
