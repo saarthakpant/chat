@@ -1,5 +1,5 @@
 import dash
-from dash import html, dcc, Input, Output, State, callback_context
+from dash import html, dcc, Input, Output, State
 import dash_bootstrap_components as dbc
 import dash_dangerously_set_inner_html
 from sentence_transformers import SentenceTransformer
@@ -10,10 +10,10 @@ from dotenv import load_dotenv
 import json
 import markdown2
 import torch
-from groq import Groq
 import logging
 import numpy as np
 import faiss
+from groq import Groq  # Ensure you have the groq package installed
 
 # Load environment variables
 load_dotenv()
@@ -53,10 +53,7 @@ app = dash.Dash(
     __name__,
     external_stylesheets=[
         dbc.themes.BOOTSTRAP,
-        "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.4.0/styles/github.min.css",
-    ],
-    external_scripts=[
-        "https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.4.0/highlight.min.js"
+        "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.3/css/all.min.css",
     ],
     suppress_callback_exceptions=True
 )
@@ -68,7 +65,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# Custom CSS for chat bubbles
+# Custom CSS to mimic OpenAI ChatGPT UI
 app.index_string = '''
 <!DOCTYPE html>
 <html>
@@ -80,126 +77,149 @@ app.index_string = '''
         <style>
             body {
                 background-color: #343541;
-                color: #FFFFFF;
+                color: #d1d5db;
+                font-family: "Segoe UI", sans-serif;
+                height: 100vh;
+                margin: 0;
+                padding: 0;
+                overflow: hidden;
+            }
+            .app-container {
+                display: flex;
+                flex-direction: column;
+                height: 100vh;
+            }
+            .main-container {
+                flex: 1;
+                display: flex;
+                flex-direction: column;
+                overflow: hidden;
             }
             .chat-container {
-                height: calc(100vh - 180px);
+                flex: 1;
                 overflow-y: auto;
                 padding: 20px;
-                background: #343541;
             }
-            .message-wrapper {
+            .context-container {
+                overflow-y: auto;
+                max-height: 150px; /* Adjust the height as needed */
+                padding: 20px;
+                background-color: #2A2B32;
+            }
+            .message-row {
                 display: flex;
-                padding: 10px 0;
-                border-bottom: 1px solid rgba(255,255,255,0.1);
+                align-items: flex-start;
+                margin-bottom: 20px;
             }
-            .message-wrapper.user {
+            .message-row.user {
                 justify-content: flex-end;
             }
-            .message-wrapper.assistant {
+            .message-row.assistant {
                 justify-content: flex-start;
             }
             .message {
-                max-width: 800px;
-                padding: 10px 20px;
-                border-radius: 10px;
+                max-width: 80%;
+                padding: 15px;
+                border-radius: 8px;
                 line-height: 1.5;
                 position: relative;
+                white-space: pre-wrap;
+                word-wrap: break-word;
+                overflow-wrap: break-word;
+                font-size: 16px;
             }
-            .user-message {
-                background-color: #5436DA;
-                color: #FFFFFF;
-                border-top-right-radius: 0;
+            .message.user {
+                background-color: #202123;
+                color: #fff;
             }
-            .assistant-message {
-                background-color: #19C37D;
-                color: #FFFFFF;
-                border-top-left-radius: 0;
-            }
-            pre {
-                background-color: #1a1b26;
-                padding: 16px;
-                border-radius: 6px;
-                overflow-x: auto;
-                margin: 10px 0;
-            }
-            code {
-                font-family: monospace;
-                color: #e9ecef;
+            .message.assistant {
+                background-color: #444654;
+                color: #fff;
             }
             .input-container {
-                position: fixed;
-                bottom: 0;
-                left: 0;
-                right: 0;
-                padding: 20px;
-                background: #343541;
-                border-top: 1px solid rgba(255,255,255,0.1);
+                padding: 10px 20px;
+                background-color: #343541;
+                border-top: 1px solid #444654;
             }
-            .input-wrapper {
+            .input-area {
+                display: flex;
+                align-items: center;
                 max-width: 800px;
                 margin: 0 auto;
-                position: relative;
             }
             .prompt-input {
-                width: 100%;
-                padding: 12px 45px 12px 15px;
-                border-radius: 6px;
-                border: 1px solid rgba(255,255,255,0.2);
-                background-color: #40414f;
-                color: white;
-                font-size: 1rem;
+                flex: 1;
+                padding: 12px 15px;
+                border-radius: 5px;
+                border: none;
+                background-color: #40414F;
+                color: #fff;
+                font-size: 16px;
                 resize: none;
                 outline: none;
             }
-            .prompt-input:focus {
-                border-color: rgba(255,255,255,0.4);
+            .prompt-input::placeholder {
+                color: #8e8ea0;
             }
             .send-button {
-                position: absolute;
-                right: 10px;
-                top: 10px;
-                background: transparent;
+                background: none;
                 border: none;
                 color: #fff;
+                font-size: 24px;
+                margin-left: 10px;
                 cursor: pointer;
-                padding: 5px;
-                border-radius: 4px;
-                font-size: 1.2rem;
+                outline: none;
             }
             .send-button:hover {
-                background: rgba(255,255,255,0.1);
+                color: #19C37D;
+            }
+            .assistant .avatar {
+                margin-right: 10px;
+            }
+            .user .avatar {
+                display: none;
             }
             .avatar {
-                width: 30px;
-                height: 30px;
-                margin-right: 15px;
+                width: 40px;
+                height: 40px;
+                background-color: #19C37D;
                 border-radius: 50%;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                font-weight: bold;
-                font-size: 14px;
+                color: #fff;
+                font-size: 20px;
+                flex-shrink: 0;
             }
-            .user-avatar {
-                background-color: #5436DA;
+            /* Scrollbar styling */
+            ::-webkit-scrollbar {
+                width: 8px;
             }
-            .assistant-avatar {
-                background-color: #19C37D;
+            ::-webkit-scrollbar-track {
+                background: #2A2B32;
             }
-            .hljs {
-                background: #1a1b26;
-                color: #e9ecef;
+            ::-webkit-scrollbar-thumb {
+                background-color: #888;
+                border-radius: 4px;
             }
-            .context-container {
-                max-width: 800px;
-                margin: 20px auto;
-                background-color: #444654;
+            ::-webkit-scrollbar-thumb:hover {
+                background: #555;
+            }
+            /* Code block styling */
+            pre {
+                background-color: #202123;
                 padding: 15px;
-                border-radius: 8px;
+                border-radius: 5px;
+                overflow-x: auto;
             }
+            code {
+                font-family: "Fira Code", monospace;
+                color: #d1d5db;
+            }
+            /* Context container styling */
             .context-container h2 {
                 margin-top: 0;
+                margin-bottom: 15px;
                 color: #19C37D;
             }
         </style>
@@ -211,54 +231,47 @@ app.index_string = '''
             {%scripts%}
             {%renderer%}
         </footer>
-        <script>
-            document.addEventListener('DOMContentLoaded', (event) => {
-                document.querySelectorAll('pre code').forEach((el) => {
-                    hljs.highlightElement(el);
-                });
-            });
-        </script>
     </body>
 </html>
 '''
 
 # Define the app layout
 app.layout = html.Div([
-    # Chat container
-    html.Div(
-        id='chat-container',
-        className="chat-container",
-        children=[]
-    ),
-
-    # Context display container
-    html.Div(
-        id='context-container',
-        className="context-container",
-        children=[]
-    ),
-    
-    # Input container
     html.Div([
         html.Div([
-            # Text input
-            dbc.Textarea(
-                id='prompt-input',
-                placeholder='Send a message...',
-                className="prompt-input",
-                style={'height': '50px'},
-                n_submit=0
+            # Chat container
+            html.Div(
+                id='chat-container',
+                className="chat-container",
+                children=[]
             ),
-            # Submit button
-            html.Button(
-                "➤",
-                id='submit-button',
-                className="send-button",
-                n_clicks=0
+            # Context display container
+            html.Div(
+                id='context-container',
+                className="context-container",
+                children=[]
             ),
-        ], className="input-wrapper")
-    ], className="input-container"),
-    
+        ], className="main-container"),
+        # Input container
+        html.Div([
+            html.Div([
+                # Text input
+                dcc.Textarea(
+                    id='prompt-input',
+                    placeholder='Send a message...',
+                    className="prompt-input",
+                    rows=1
+                ),
+                # Submit button
+                html.Button(
+                    html.I(className="fas fa-paper-plane"),
+                    id='submit-button',
+                    className="send-button",
+                    n_clicks=0
+                ),
+            ], className="input-area")
+        ], className="input-container"),
+    ], className="app-container"),
     # Store component for chat history with initial structure
     dcc.Store(id='chat-history', data={"history": [], "pending_info": {}}),
     dcc.Store(id='context-data', data={})
@@ -267,31 +280,40 @@ app.layout = html.Div([
 # Function to create message divs
 def create_message_div(text, is_user=False):
     """Create a message div with proper formatting"""
-    wrapper_class = "message-wrapper user" if is_user else "message-wrapper assistant"
-    message_class = "user-message" if is_user else "assistant-message"
+    message_row_class = "message-row user" if is_user else "message-row assistant"
+    message_class = "message user" if is_user else "message assistant"
+
+    avatar = html.Div("A", className="avatar") if not is_user else html.Div()
 
     # Render markdown for assistant messages
     if not is_user:
-        html_content = markdown2.markdown(
-            text,
-            extras=["fenced-code-blocks", "tables", "break-on-newline"]
-        )
-        message = html.Div(
+        try:
+            html_content = markdown2.markdown(
+                text,
+                extras=["fenced-code-blocks", "tables", "break-on-newline"]
+            )
+        except Exception as e:
+            logging.error(f"Error rendering markdown: {e}")
+            # Escape the text to prevent code execution
+            import html
+            safe_text = html.escape(text)
+            html_content = f"<pre>{safe_text}</pre>"
+        message_body = html.Div(
             dash_dangerously_set_inner_html.DangerouslySetInnerHTML(html_content),
             className=message_class
         )
     else:
-        message = html.Div(text, className=message_class)
+        message_body = html.Div(text, className=message_class)
 
     return html.Div([
-        html.Div('', className="avatar"),
-        message
-    ], className=wrapper_class)
+        avatar,
+        message_body
+    ], className=message_row_class)
 
 # Function to create context display
 def create_context_div(context_data):
     """Create a div to display the fetched context"""
-    if not context_data:
+    if not context_data or not context_data.get('dialogues'):
         return html.Div()
 
     dialogues = context_data.get('dialogues', [])
@@ -320,9 +342,9 @@ def create_context_div(context_data):
     )
 
     return html.Div([
-        html.H2("Context Retrieved"),
+        html.H2("Retrieved Context"),
         dash_dangerously_set_inner_html.DangerouslySetInnerHTML(html_content)
-    ], className="context-container")
+    ])
 
 # Function to perform similarity search using Faiss
 def find_similar_dialogues(prompt_embedding, top_k=3):
@@ -337,19 +359,17 @@ def get_dialogues_by_ids(dialogue_ids_list):
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
-        placeholders = ','.join(['%s'] * len(dialogue_ids_list))
+        # Build the placeholders string
+        placeholders = ', '.join(['%s'] * len(dialogue_ids_list))
+
+        logging.info(f"Dialogue IDs being queried: {dialogue_ids_list}")
+
         query = f"""
             SELECT 
                 dialogue_id,
                 scenario_category,
                 generated_scenario,
-                resolution_status,
-                time_slot,
-                regions,
-                num_lines,
-                user_emotions,
-                assistant_emotions,
-                embedding
+                resolution_status
             FROM dialogues
             WHERE dialogue_id IN ({placeholders});
         """
@@ -362,9 +382,7 @@ def get_dialogues_by_ids(dialogue_ids_list):
                 dialogue_id,
                 turn_number,
                 utterance,
-                intent,
-                assistant_response,
-                embedding
+                assistant_response
             FROM dialogue_turns
             WHERE dialogue_id IN ({placeholders})
             ORDER BY dialogue_id, turn_number;
@@ -376,10 +394,9 @@ def get_dialogues_by_ids(dialogue_ids_list):
         conn.close()
 
         return {'dialogues': dialogues, 'turns': turns}
-
     except Exception as e:
         logging.error(f"Error retrieving dialogues: {e}")
-        return None
+        return {'dialogues': [], 'turns': []}
 
 # Callback to handle chat updates
 @app.callback(
@@ -387,15 +404,14 @@ def get_dialogues_by_ids(dialogue_ids_list):
      Output('chat-history', 'data'),
      Output('prompt-input', 'value'),
      Output('context-container', 'children')],
-    [Input('submit-button', 'n_clicks'),
-     Input('prompt-input', 'n_submit')],
+    Input('submit-button', 'n_clicks'),
     [State('prompt-input', 'value'),
      State('chat-history', 'data'),
      State('context-data', 'data')],
     prevent_initial_call=True
 )
-def update_chat(n_clicks, n_submit, prompt, chat_history, context_data):
-    if not callback_context.triggered or (prompt is None or prompt.strip() == ""):
+def update_chat(n_clicks, prompt, chat_history, context_data):
+    if n_clicks is None or (prompt is None or prompt.strip() == ""):
         return dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
     # Ensure chat_history has the correct structure
@@ -417,18 +433,25 @@ def update_chat(n_clicks, n_submit, prompt, chat_history, context_data):
 
         # Find similar dialogues using Faiss
         similar_dialogue_ids = find_similar_dialogues(prompt_embedding, top_k=3)
+        logging.info(f"Similar Dialogue IDs: {similar_dialogue_ids}")
 
         # Retrieve dialogues and turns from the database
         search_results = get_dialogues_by_ids(similar_dialogue_ids)
-
-        # Log the context retrieval
-        logging.info(f"Retrieved context: {search_results}")
+        logging.info(f"Search Results: {search_results}")
 
         # Update context data store
         context_data = search_results
 
+        # Log the retrieved context
+        logging.info("Retrieved Context:")
+        logging.info(json.dumps(context_data, indent=2))
+
+        # Print the retrieved context to the console
+        print("Retrieved Context:")
+        print(json.dumps(context_data, indent=2))
+
         # Prepare system prompt based on retrieved context
-        if search_results:
+        if search_results and search_results['dialogues']:
             dialogues = search_results['dialogues']
             turns = search_results['turns']
 
@@ -528,10 +551,9 @@ None
             {"role": "system", "content": system_prompt}
         ] + chat_history['history']
 
-        # Generate Groq response
+        # Generate assistant response using Groq client
         response = groq_client.chat.completions.create(
             model="llama3-8b-8192",
-            # model="mixtral-8x7b-32768",
             messages=messages,
             temperature=0.7,
             max_tokens=500,
@@ -540,6 +562,8 @@ None
         )
 
         assistant_response = response.choices[0].message.content.strip()
+        logging.info(f"Assistant response: {assistant_response}")
+
         chat_history['history'].append({"role": "assistant", "content": assistant_response})
 
         # Create message components for the chat interface
@@ -555,7 +579,7 @@ None
 
     except Exception as e:
         logging.error(f"Error in update_chat: {e}")
-        error_message = f"❌ An error occurred: {str(e)}"
+        error_message = f"An error occurred: {str(e)}"
         chat_history['history'].append({"role": "assistant", "content": error_message})
         # Create message components for the chat interface
         message_components = [

@@ -157,6 +157,9 @@ Thumbs.db
 
 
 #dataset
-
 dataset*
+!dataset_1k*
+
+
+generated_dialogues.json
 
