@@ -81,40 +81,46 @@ app.index_string = '''
             body {
                 background-color: #343541;
                 color: #FFFFFF;
+                margin: 0;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
             }
             .chat-container {
                 height: calc(100vh - 180px);
                 overflow-y: auto;
-                padding: 20px;
+                padding: 0;
                 background: #343541;
+                scroll-behavior: smooth;
             }
             .message-wrapper {
                 display: flex;
-                padding: 10px 0;
+                padding: 24px 0;
                 border-bottom: 1px solid rgba(255,255,255,0.1);
+                margin: 0;
+                width: 100%;
             }
             .message-wrapper.user {
-                justify-content: flex-end;
+                background-color: #343541;
             }
             .message-wrapper.assistant {
-                justify-content: flex-start;
+                background-color: #444654;
             }
             .message {
                 max-width: 800px;
-                padding: 10px 20px;
-                border-radius: 10px;
-                line-height: 1.5;
-                position: relative;
+                width: 800px;
+                margin: 0 auto;
+                padding: 0 20px;
+                line-height: 1.6;
+                display: flex;
+                gap: 20px;
+                align-items: flex-start;
             }
-            .user-message {
-                background-color: #5436DA;
-                color: #FFFFFF;
-                border-top-right-radius: 0;
+            .message-content {
+                flex-grow: 1;
             }
-            .assistant-message {
-                background-color: #19C37D;
+            .user-message, .assistant-message {
+                background: none;
                 color: #FFFFFF;
-                border-top-left-radius: 0;
+                border-radius: 0;
             }
             pre {
                 background-color: #1a1b26;
@@ -124,8 +130,9 @@ app.index_string = '''
                 margin: 10px 0;
             }
             code {
-                font-family: monospace;
+                font-family: 'Söhne Mono', Monaco, 'Andale Mono', 'Ubuntu Mono', monospace;
                 color: #e9ecef;
+                font-size: 14px;
             }
             .input-container {
                 position: fixed;
@@ -143,7 +150,7 @@ app.index_string = '''
             }
             .prompt-input {
                 width: 100%;
-                padding: 12px 45px 12px 15px;
+                padding: 16px 45px 16px 15px;
                 border-radius: 6px;
                 border: 1px solid rgba(255,255,255,0.2);
                 background-color: #40414f;
@@ -151,14 +158,15 @@ app.index_string = '''
                 font-size: 1rem;
                 resize: none;
                 outline: none;
+                box-shadow: 0 0 10px rgba(0,0,0,0.1);
             }
             .prompt-input:focus {
-                border-color: rgba(255,255,255,0.4);
+                border-color: #10a37f;
             }
             .send-button {
                 position: absolute;
                 right: 10px;
-                top: 10px;
+                bottom: 12px;
                 background: transparent;
                 border: none;
                 color: #fff;
@@ -166,15 +174,16 @@ app.index_string = '''
                 padding: 5px;
                 border-radius: 4px;
                 font-size: 1.2rem;
+                opacity: 0.8;
+                transition: opacity 0.2s;
             }
             .send-button:hover {
-                background: rgba(255,255,255,0.1);
+                opacity: 1;
             }
             .avatar {
                 width: 30px;
                 height: 30px;
-                margin-right: 15px;
-                border-radius: 50%;
+                border-radius: 2px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -185,7 +194,7 @@ app.index_string = '''
                 background-color: #5436DA;
             }
             .assistant-avatar {
-                background-color: #19C37D;
+                background-color: #10a37f;
             }
             .hljs {
                 background: #1a1b26;
@@ -195,12 +204,23 @@ app.index_string = '''
                 max-width: 800px;
                 margin: 20px auto;
                 background-color: #444654;
-                padding: 15px;
+                padding: 20px;
                 border-radius: 8px;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.1);
             }
             .context-container h2 {
                 margin-top: 0;
-                color: #19C37D;
+                color: #10a37f;
+                font-size: 1.2rem;
+                font-weight: 600;
+                margin-bottom: 16px;
+            }
+            p {
+                margin: 0 0 10px 0;
+            }
+            ul, ol {
+                margin: 0;
+                padding-left: 20px;
             }
         </style>
     </head>
@@ -268,7 +288,8 @@ app.layout = html.Div([
 def create_message_div(text, is_user=False):
     """Create a message div with proper formatting"""
     wrapper_class = "message-wrapper user" if is_user else "message-wrapper assistant"
-    message_class = "user-message" if is_user else "assistant-message"
+    avatar_class = "avatar user-avatar" if is_user else "avatar assistant-avatar"
+    avatar_text = "U" if is_user else "A"
 
     # Render markdown for assistant messages
     if not is_user:
@@ -276,16 +297,18 @@ def create_message_div(text, is_user=False):
             text,
             extras=["fenced-code-blocks", "tables", "break-on-newline"]
         )
-        message = html.Div(
+        message_content = html.Div(
             dash_dangerously_set_inner_html.DangerouslySetInnerHTML(html_content),
-            className=message_class
+            className="message-content"
         )
     else:
-        message = html.Div(text, className=message_class)
+        message_content = html.Div(text, className="message-content")
 
     return html.Div([
-        html.Div('', className="avatar"),
-        message
+        html.Div([
+            html.Div(avatar_text, className=avatar_class),
+            message_content
+        ], className="message")
     ], className=wrapper_class)
 
 # Function to create context display
@@ -380,7 +403,7 @@ def get_dialogues_by_ids(dialogue_ids_list):
     except Exception as e:
         logging.error(f"Error retrieving dialogues: {e}")
         return None
-
+    
 # Callback to handle chat updates
 @app.callback(
     [Output('chat-container', 'children'),
